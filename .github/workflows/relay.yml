@@ -20,6 +20,8 @@ jobs:
         env:
           WAYFAIR_INGEST_URL: ${{ secrets.WAYFAIR_INGEST_URL }}
           MICROSOFT_INGEST_URL: ${{ secrets.MICROSOFT_INGEST_URL }}
+          CVS_INGEST_URL: ${{ secrets.CVS_INGEST_URL }}
+          CEREBRAS_INGEST_URL: ${{ secrets.CEREBRAS_INGEST_URL }}
           MICROSOFT_LOCATION: ${{ secrets.MICROSOFT_LOCATION }}
           CAREER_RELAY_KEY: ${{ secrets.CAREER_RELAY_KEY }}
           RELAY_SCHEDULED: 'true'

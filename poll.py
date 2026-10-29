@@ -1,14 +1,21 @@
 """Read official career feeds and relay snapshots to owner-configured endpoints."""
 import datetime
 import email.utils
+import hashlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
 QUERIES=['software','machine learning','infrastructure','inference','AI engineer','ML','platform']
+CVS='https://cvshealth.wd1.myworkdayjobs.com'
+CVS_QUERIES=['software','machine learning','AI engineer','platform engineer','infrastructure','site reliability']
+# Ashby lists every department at once; only technical titles are relayed to keep receiver traffic small.
+TECHNICAL=re.compile(r'\b(engineer\w*|developer|scientist|research\w*|software|machine learning|ml|ai|inference|platform|infrastructure|mlops|sre)\b',re.I)
+LIMIT=8000000
 UA='CareerFeedRelay/1.0 public-career-feed-monitor'
 class FeedError(Exception):
     def __init__(self,message,retry_after=300): super().__init__(message);self.retry_after=retry_after
@@ -19,7 +26,8 @@ def request(url,body=None,key=None):
     req=urllib.request.Request(url,json.dumps(body).encode() if body is not None else None,headers)
     for attempt in range(3):
         try:
-            with urllib.request.urlopen(req,timeout=30) as response: raw=response.read(2000000)
+            with urllib.request.urlopen(req,timeout=30) as response: raw=response.read(LIMIT+1)
+            if len(raw)>LIMIT: raise FeedError('Response exceeded '+str(LIMIT//1000000)+' MB; not processed')
             return json.loads(raw)
         except urllib.error.HTTPError as error:
             if urllib.parse.urlparse(url).path=='/api/feed-relay' and error.code==400:
@@ -74,9 +82,49 @@ def microsoft(state):
         if offset==cursor:next_cursor=20 if offset+len(rows)>=total else offset+len(rows)
         time.sleep(0.75)
     return list(jobs.values()),next_cursor
+def microsoft_detail(job):
+    detail=request('https://apply.careers.microsoft.com/api/pcsx/position_details?'+urllib.parse.urlencode({'domain':'microsoft.com','position_id':job['id']}))
+    data=detail.get('data') or {}
+    if detail.get('status')!=200 or not data.get('jobDescription'):raise FeedError('Microsoft full description unavailable')
+    return {**job,'description':data['jobDescription'],'location':'; '.join(data.get('locations') or []) or job['location']}
+def cvs(state):
+    jobs={}
+    for query in CVS_QUERIES:
+        data=request(CVS+'/wday/cxs/cvshealth/CVS_Health_Careers/jobs',{'appliedFacets':{},'limit':20,'offset':0,'searchText':query})
+        if not isinstance(data.get('jobPostings'),list): raise FeedError('CVS career search schema changed')
+        # Workday lists newest first, so the first page of each search holds new postings.
+        for row in data['jobPostings']:
+            path=row.get('externalPath') or '';jid=(row.get('bulletFields') or [''])[0] or path.rsplit('_',1)[-1]
+            if not row.get('title') or not path.startswith('/job/') or not re.fullmatch(r'[A-Za-z0-9-]{1,40}',jid): raise FeedError('Incomplete job record')
+            jobs[jid]={'id':jid,'title':row['title'],'url':CVS+'/CVS_Health_Careers'+path,'location':row.get('locationsText') or '','description':'','version':row['title']+'|'+path,'posted':''}
+        time.sleep(0.75)
+    return list(jobs.values()),0
+def cvs_detail(job):
+    path=urllib.parse.urlparse(job['url']).path.removeprefix('/CVS_Health_Careers')
+    data=request(CVS+'/wday/cxs/cvshealth/CVS_Health_Careers'+path).get('jobPostingInfo') or {}
+    if not data.get('jobDescription'): raise FeedError('CVS full description unavailable')
+    places=[data.get('location'),*(data.get('additionalLocations') or []),(data.get('country') or {}).get('descriptor')]
+    return {**job,'description':data['jobDescription'],'location':'; '.join(p for p in places if p) or job['location'],'posted':data.get('startDate') or job.get('posted') or ''}
+def cerebras(state):
+    data=request('https://api.ashbyhq.com/posting-api/job-board/cerebras')
+    if not isinstance(data.get('jobs'),list): raise FeedError('Cerebras job board schema changed')
+    jobs=[]
+    for row in data['jobs']:
+        title=(row.get('title') or '').strip()
+        if row.get('isListed') is False or not TECHNICAL.search(title): continue
+        places=[row.get('location'),*[s.get('location') for s in row.get('secondaryLocations') or []],'Remote' if row.get('workplaceType')=='Remote' else None,((row.get('address') or {}).get('postalAddress') or {}).get('addressCountry')]
+        location='; '.join(dict.fromkeys(p for p in places if p))
+        if not row.get('id') or not title or not row.get('jobUrl'): raise FeedError('Incomplete job record')
+        description=row.get('descriptionHtml') or row.get('descriptionPlain') or ''
+        jobs.append({'id':row['id'],'title':title,'url':row['jobUrl'],'location':location,'description':description,'version':hashlib.sha256('|'.join([title,location,description]).encode()).hexdigest()[:24],'posted':row.get('publishedAt') or ''})
+    return jobs,0
+# Collectors without a description step already return full descriptions.
+SOURCES=[('wayfair',wayfair,None),('microsoft',microsoft,microsoft_detail),('cvs',cvs,cvs_detail),('cerebras',cerebras,None)]
 def main():
     failed=False;dry=os.environ.get('RELAY_DRY_RUN')=='true';scheduled=os.environ.get('RELAY_SCHEDULED')=='true'
-    for source,collector in [('wayfair',wayfair),('microsoft',microsoft)]:
+    only=set(filter(None,os.environ.get('RELAY_SOURCES','').split(',')))
+    for source,collector,describe in SOURCES:
+        if only and source not in only: continue
         scan=''
         endpoint=os.environ.get(source.upper()+'_INGEST_URL','');key=os.environ.get('CAREER_RELAY_KEY','')
         if not dry and not endpoint: print(source+': not configured; skipped.');continue
@@ -88,20 +136,19 @@ def main():
             if state.get('next_allowed',0)>time.time()*1000: print(source+': checked moments ago or cooling down; skipped.');continue
             jobs,next_cursor=collector(state)
             if not jobs:raise FeedError('Unexpected empty feed requires review; not marked successful')
-            if dry:print(f'{source}: public feed readable; {len(jobs)} jobs; nothing relayed.');continue
+            if dry:
+                sample=describe(jobs[0]) if describe else jobs[0]
+                print(f'{source}: public feed readable; {len(jobs)} jobs; sample "{sample["title"]}" at {sample["location"][:80]} with {len(sample["description"])} description chars; nothing relayed.');continue
             scan=str(uuid.uuid4())
             result=request(endpoint,{'phase':'begin','run_id':scan,'expected':len(jobs),'scheduled':scheduled},key)
             for offset in range(result.get('received',0),len(jobs),2):request(endpoint,{'phase':'chunk','run_id':scan,'offset':offset,'jobs':jobs[offset:offset+2]},key)
             # The private receiver decides which descriptions are needed; no role rules live here.
-            if source=='microsoft':
+            if describe:
                 queue=request(endpoint,{'phase':'status'},key).get('pending',[])
                 enriched=[]
                 for job in queue:
                     time.sleep(3)
-                    detail=request('https://apply.careers.microsoft.com/api/pcsx/position_details?'+urllib.parse.urlencode({'domain':'microsoft.com','position_id':job['id']}))
-                    data=detail.get('data') or {}
-                    if detail.get('status')!=200 or not data.get('jobDescription'):raise FeedError('Microsoft full description unavailable')
-                    enriched.append({**job,'description':data['jobDescription'],'location':'; '.join(data.get('locations') or []) or job['location']})
+                    enriched.append(describe(job))
                 for offset in range(0,len(enriched),2):request(endpoint,{'phase':'details','run_id':scan,'jobs':enriched[offset:offset+2]},key)
             result=request(endpoint,{'phase':'finish','run_id':scan,'next_cursor':next_cursor},key)
             print(f'{source}: complete snapshot relayed; {result["received"]} jobs; recurring mode: {result["scheduled"]}.')
