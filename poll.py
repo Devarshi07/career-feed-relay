@@ -118,6 +118,17 @@ def cerebras(state):
         description=row.get('descriptionHtml') or row.get('descriptionPlain') or ''
         jobs.append({'id':row['id'],'title':title,'url':row['jobUrl'],'location':location,'description':description,'version':hashlib.sha256('|'.join([title,location,description]).encode()).hexdigest()[:24],'posted':row.get('publishedAt') or ''})
     return jobs,0
+def deliver(endpoint,key):
+    # ntfy.sh limits senders per IP and the receiver's shared cloud addresses exhaust it, so queued alerts are published here.
+    # Message contents come from the receiver and are never printed.
+    box=request(endpoint,{'phase':'outbox'},key);results=[]
+    for item in box.get('messages') or []:
+        try:
+            reply=request('https://ntfy.sh',item['ntfy'])
+            results.append({'event_id':item['event_id'],'ok':True} if reply.get('id') else {'event_id':item['event_id'],'ok':False,'error':'ntfy did not confirm acceptance'})
+        except FeedError as error: results.append({'event_id':item['event_id'],'ok':False,'error':str(error)[:200],'retry_after':error.retry_after})
+    if results: request(endpoint,{'phase':'delivered','owner':box.get('owner',''),'results':results},key)
+    return sum(1 for r in results if r['ok']),len(results)
 # Collectors without a description step already return full descriptions.
 SOURCES=[('wayfair',wayfair,None),('microsoft',microsoft,microsoft_detail),('cvs',cvs,cvs_detail),('cerebras',cerebras,None)]
 def main():
@@ -158,5 +169,13 @@ def main():
             if not dry:
                 try:request(endpoint,{'phase':'failure','run_id':scan,'error':message,'retry_after':getattr(error,'retry_after',300),'scheduled':scheduled},key)
                 except Exception:print(source+': could not report the failure to the receiver.')
+    # Alerts go out even when a company's check was skipped or failed; undelivered ones retry on a later run.
+    for source,_,_ in SOURCES if not dry else []:
+        endpoint=os.environ.get(source.upper()+'_INGEST_URL','')
+        if (only and source not in only) or not endpoint: continue
+        try:
+            sent,total=deliver(endpoint,os.environ.get('CAREER_RELAY_KEY',''))
+            if total: print(f'{source}: {sent} of {total} queued alerts published.')
+        except Exception as error: print(source+': alert delivery failed: '+(str(error) if isinstance(error,FeedError) else type(error).__name__))
     raise SystemExit(int(failed))
 if __name__=='__main__':main()
