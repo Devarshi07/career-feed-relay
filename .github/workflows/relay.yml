@@ -1,0 +1,23 @@
+name: Public career feed relay
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: career-feed-relay
+  cancel-in-progress: false
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: python poll.py
+        env:
+          WAYFAIR_INGEST_URL: ${{ secrets.WAYFAIR_INGEST_URL }}
+          MICROSOFT_INGEST_URL: ${{ secrets.MICROSOFT_INGEST_URL }}
+          MICROSOFT_LOCATION: ${{ secrets.MICROSOFT_LOCATION }}
+          CAREER_RELAY_KEY: ${{ secrets.CAREER_RELAY_KEY }}
+          RELAY_SCHEDULED: 'true'
