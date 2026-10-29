@@ -31,7 +31,8 @@ def request(url,body=None,key=None):
                 try: delay=int(raw)
                 except ValueError:
                     try: delay=int(email.utils.parsedate_to_datetime(raw).timestamp()-time.time())
-                    except (ValueError,TypeError): delay=900
+                    # Without Retry-After, a 429 is retried on the next five-minute run; a 403 waits 15 minutes.
+                    except (ValueError,TypeError): delay=240 if error.code==429 else 900
                 # Name the rejected public endpoint; receiver addresses stay out of public logs.
                 endpoint=urllib.parse.urlparse(url)
                 where='Receiver' if endpoint.path=='/api/feed-relay' else endpoint.hostname+endpoint.path
