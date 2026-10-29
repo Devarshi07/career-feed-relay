@@ -1,7 +1,9 @@
 name: Public career feed relay
 on:
+  push:
+    paths: ['poll.py', '.github/workflows/relay.yml']
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '2-57/5 * * * *'
   workflow_dispatch:
 permissions:
   contents: read
