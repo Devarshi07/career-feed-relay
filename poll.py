@@ -32,7 +32,10 @@ def request(url,body=None,key=None):
                 except ValueError:
                     try: delay=int(email.utils.parsedate_to_datetime(raw).timestamp()-time.time())
                     except (ValueError,TypeError): delay=900
-                raise FeedError('Career endpoint returned HTTP '+str(error.code),max(60,delay)) from None
+                # Name the rejected public endpoint; receiver addresses stay out of public logs.
+                endpoint=urllib.parse.urlparse(url)
+                where='Receiver' if endpoint.path=='/api/feed-relay' else endpoint.hostname+endpoint.path
+                raise FeedError(where+' returned HTTP '+str(error.code)+(' (Retry-After '+raw[:40]+')' if raw else ''),max(60,delay)) from None
             if error.code==404: raise FeedError('Career endpoint returned HTTP 404') from None
             if error.code not in (409,500,502,503,504) or attempt==2: raise FeedError('Request failed: HTTP '+str(error.code)) from None
         except (TimeoutError,urllib.error.URLError):
@@ -81,7 +84,7 @@ def main():
                 parsed=urllib.parse.urlparse(endpoint)
                 if parsed.scheme!='https' or parsed.path!='/api/feed-relay':raise FeedError('Configure an HTTPS /api/feed-relay endpoint')
             state={} if dry else request(endpoint,{'phase':'status'},key)
-            if state.get('next_allowed',0)>time.time()*1000: print(source+': respecting source cooldown.');continue
+            if state.get('next_allowed',0)>time.time()*1000: print(source+': checked moments ago or cooling down; skipped.');continue
             jobs,next_cursor=collector(state)
             if not jobs:raise FeedError('Unexpected empty feed requires review; not marked successful')
             if dry:print(f'{source}: public feed readable; {len(jobs)} jobs; nothing relayed.');continue

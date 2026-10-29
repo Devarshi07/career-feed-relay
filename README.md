@@ -4,7 +4,7 @@ A small, dependency-free Python job that reads the official Wayfair and Microsof
 
 Only public job data is handled. Eligibility filters and notification delivery remain in the receiving application. This directory contains no applicant details, phone notification topics, admin passwords or Cloudflare account credentials.
 
-The prepared GitHub workflow runs once every five minutes with no continuous background loop. GitHub scheduling can delay or drop runs. Rate/access restrictions stop a company's current run; its cooldown is recorded in the receiver and respected by later runs. No CAPTCHA, browser impersonation, authentication bypass or proxies are used. Wayfair uses overlapping keyword snapshots. Microsoft uses recent software pages, a rotating technical query and one historical page per run; full historical coverage is not claimed.
+The prepared GitHub workflow runs once every five minutes with no continuous background loop. GitHub scheduling can delay or drop runs, so the receiving application may also start runs through `workflow_dispatch` on its own five-minute clock; a company checked moments earlier is skipped rather than fetched twice. Rate/access restrictions stop a company's current run; its cooldown is recorded in the receiver and respected by later runs. No CAPTCHA, browser impersonation, authentication bypass or proxies are used. Wayfair uses overlapping keyword snapshots. Microsoft uses recent software pages, a rotating technical query and one historical page per run; full historical coverage is not claimed.
 
 ## Deployment
 
