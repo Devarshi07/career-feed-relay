@@ -22,6 +22,10 @@ def request(url,body=None,key=None):
             with urllib.request.urlopen(req,timeout=30) as response: raw=response.read(2000000)
             return json.loads(raw)
         except urllib.error.HTTPError as error:
+            if urllib.parse.urlparse(url).path=='/api/feed-relay' and error.code==400:
+                try: message=json.loads(error.read()).get('error','Invalid receiver payload')
+                except (ValueError,TypeError): message='Invalid receiver payload'
+                raise FeedError('Receiver '+str((body or {}).get('phase'))+': '+str(message)[:120]) from None
             if error.code in (403,429):
                 raw=error.headers.get('Retry-After','')
                 try: delay=int(raw)
@@ -69,6 +73,7 @@ def microsoft(state):
 def main():
     failed=False;dry=os.environ.get('RELAY_DRY_RUN')=='true';scheduled=os.environ.get('RELAY_SCHEDULED')=='true'
     for source,collector in [('wayfair',wayfair),('microsoft',microsoft)]:
+        scan=''
         endpoint=os.environ.get(source.upper()+'_INGEST_URL','');key=os.environ.get('CAREER_RELAY_KEY','')
         if not dry and not endpoint: print(source+': not configured; skipped.');continue
         try:
@@ -100,7 +105,7 @@ def main():
             failed=True;message=str(error) if isinstance(error,FeedError) else 'Feed processing failed: '+type(error).__name__
             print(source+': '+message)
             if not dry:
-                try:request(endpoint,{'phase':'failure','error':message,'retry_after':getattr(error,'retry_after',300),'scheduled':scheduled},key)
+                try:request(endpoint,{'phase':'failure','run_id':scan,'error':message,'retry_after':getattr(error,'retry_after',300),'scheduled':scheduled},key)
                 except Exception:print(source+': could not report the failure to the receiver.')
     raise SystemExit(int(failed))
 if __name__=='__main__':main()
